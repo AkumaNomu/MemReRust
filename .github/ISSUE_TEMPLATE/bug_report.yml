@@ -24,12 +24,20 @@ body:
     validations:
       required: true
   - type: input
-    id: windows_version
+    id: linux_version
     attributes:
-      label: Windows version
-      description: What Windows version do you use.
+      label: Distribution and kernel
+      description: What Linux distribution and kernel version do you use.
+      placeholder: e.g. Fedora 40, kernel 6.9
     validations:
       required: true
+  - type: checkboxes
+    id: root
+    attributes:
+      label: Environment
+      options:
+        - label: I ran the command with root privileges, or this issue also occurs for `status`/`watch` (which do not need root).
+          required: false
   - type: textarea
     id: steps
     attributes:
