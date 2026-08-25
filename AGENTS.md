@@ -4,10 +4,12 @@ Guidance for AI agents (and humans) working on this repository.
 
 ## Project
 
-`memreduct` is a Rust CLI that ports Henry++ Mem Reduct to Linux. It reads
-`/proc`/sysfs, drives `drop_caches`, PSI triggers, cgroup-v2 memory controls,
-and zram telemetry. No daemon, no config files; everything is subcommands +
-flags with optional `--json` on every command.
+`memreduct` is a Rust CLI + optional native GUI that ports Henry++ Mem Reduct
+to Linux and Windows. It reads `/proc`/sysfs on Linux (and `GlobalMemoryStatusEx`
+/ `EmptyWorkingSet` on Windows), drives `drop_caches`, PSI triggers, cgroup-v2
+memory controls, and zram telemetry. No daemon, no config files; everything is
+subcommands + flags with optional `--json` on every command, plus `gui` / `--gui`
+for the compact egui window.
 
 Upstream (Windows original): <https://github.com/henrypp/memreduct>
 This fork: <https://github.com/AkumaNomu/MemReRust>
@@ -16,7 +18,8 @@ This fork: <https://github.com/AkumaNomu/MemReRust>
 
 | File | Responsibility |
 | --- | --- |
-| `src/main.rs` | CLI definition (`clap` derive), all command implementations, JSON output |
+| `src/main.rs` | CLI definition (`clap` derive), all command implementations, JSON output, `gui` dispatch |
+| `src/gui.rs` | egui native GUI (feature `gui`, Windows + Linux, compact minimalist) |
 | `src/mem.rs` | `/proc/meminfo` parsing, byte formatting/parsing, `drop_caches` path |
 | `src/cgroup.rs` | cgroup v2 discovery via mountinfo, `memory.*` file IO |
 | `src/psi.rs` | PSI parsing + kernel trigger registration (`poll(2)` based) |
@@ -56,6 +59,8 @@ cargo fmt --check          # formatting gate
 cargo test                 # unit tests (pure parsers only, no root needed)
 cargo clippy --all-targets -- -D warnings   # must be warning-free
 cargo build                # host build
+cargo build --features gui # GUI build (needs Wayland/X11 dev libs on Linux)
+cargo test --features gui  # GUI tests (same parsers, GUI feature checked)
 
 # fully static musl binary in THIS sandbox (zig cc double-injects CRT and
 # breaks _start, so link directly with rustup's bundled rust-lld):
@@ -82,8 +87,8 @@ tests as root elsewhere.
   captured real-world samples (see `parse_slabinfo`, `parse_psi`,
   `parse_meminfo` tests).
 - Keep clap doc-comments terse: they become help text.
-- No async, no threads beyond `std::thread::sleep`, deps stay minimal
-  (anyhow, clap, clap_complete, libc).
+- No async, no threads beyond `std::thread::sleep` (GUI uses `std::thread::spawn` for leak scan and exec hooks only), deps stay minimal
+  (anyhow, clap, clap_complete, libc; `eframe`/`egui_plot` behind `gui` feature).
 
 ## Privilege model
 
@@ -100,5 +105,6 @@ tests as root elsewhere.
 1. Bump version in `Cargo.toml`, update `CHANGELOG.md`.
 2. Gates green (fmt/test/clippy), smoke test: `status`, `watch --once`,
    `completions bash`, `--json` variants parse with `python3 -m json.tool`.
+   If `gui` changed, also `cargo check --features gui` and smoke `gui --help`.
 3. Build static musl binaries x86_64 + aarch64 (CI does this on tags).
 4. Update packaging versions if needed (`packaging/`).

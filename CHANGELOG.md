@@ -29,8 +29,9 @@ The changelog history of the original Windows project is kept upstream:
 - Clearer errors when running on legacy cgroup v1 systems
 - Packaging: Arch PKGBUILD, Alpine APKBUILD, Fedora RPM spec, Debian dir,
   systemd unit/timer examples (`packaging/`)
-- CI: fmt/clippy/test gate plus static musl builds for x86_64 and aarch64;
-  release workflow attaches binaries to tags
+ - `gui` / `--gui` / `gui` subcommand: compact native egui window for Windows + Linux (live RAM/swap/PSI bars + history graph, Clean/Compact buttons, Auto-clean toggle, tabs for Processes/OOM/Slab/Zram/Cgroup/Leak Scan; Windows uses GlobalMemoryStatusEx/EmptyWorkingSet, Linux keeps full /proc/cgroup/zram support)
+ - CI: fmt/clippy/test gate plus static musl builds for x86_64 and aarch64;
+   release workflow attaches binaries to tags (GUI built with `--features gui`)
 
 ## 0.1.0 - 2026-08-16
 

@@ -6,6 +6,7 @@ use std::time::Instant;
 use std::{fs, thread, time::Duration};
 
 mod cgroup;
+mod gui;
 mod mem;
 mod procs;
 mod psi;
@@ -26,8 +27,12 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
+    /// Launch the graphical interface (same as `gui` subcommand).
+    #[arg(long, global = true)]
+    gui: bool,
+
     #[command(subcommand)]
-    command: CommandKind,
+    command: Option<CommandKind>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -169,6 +174,9 @@ enum CommandKind {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+
+    /// Launch the graphical interface.
+    Gui,
 }
 
 #[derive(Subcommand, Debug)]
@@ -260,7 +268,28 @@ fn main() {
 fn run() -> Result<()> {
     let cli = Cli::parse();
 
-    match cli.command {
+    // --gui flag or `gui` subcommand launches the GUI (both, per request)
+    if cli.gui {
+        return gui::run().map_err(|e| anyhow::anyhow!(e.to_string()));
+    }
+
+    let Some(cmd) = cli.command else {
+        // No subcommand: launch GUI if built, otherwise show help
+        #[cfg(feature = "gui")]
+        {
+            return gui::run().map_err(|e| anyhow::anyhow!(e.to_string()));
+        }
+        #[cfg(not(feature = "gui"))]
+        {
+            // mimic clap's help output for missing subcommand
+            Cli::command().print_help().ok();
+            println!();
+            bail!("no subcommand given; try `memreduct gui` or rebuild with --features gui");
+        }
+    };
+
+    match cmd {
+        CommandKind::Gui => gui::run().map_err(|e| anyhow::anyhow!(e.to_string())),
         CommandKind::Status => print_status(read_memory()?, cli.json),
         CommandKind::Psi { cgroup } => print_psi(&cgroup, cli.json),
         CommandKind::Clean { mode, dry_run } => clean(mode, dry_run, cli.json),

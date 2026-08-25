@@ -18,12 +18,14 @@ releases and runs unchanged across glibc/musl distros on x86_64 and aarch64.
 Grab `memreduct-vX.Y.Z-<target>.tar.gz` from
 [Releases](https://github.com/AkumaNomu/MemReRust/releases), untar, copy to
 `/usr/local/bin`. Targets: `x86_64-unknown-linux-musl`,
-`aarch64-unknown-linux-musl`.
+`aarch64-unknown-linux-musl`. GUI builds are `memreduct-gui-*` tarballs (same binary, built with `--features gui`).
 
 ### From source
 
 ```sh
-cargo install --git https://github.com/AkumaNomu/MemReRust
+cargo install --git https://github.com/AkumaNomu/MemReRust                 # CLI only
+cargo install --features gui --git https://github.com/AkumaNomu/MemReRust  # with native GUI (needs Wayland/X11 dev libs on Linux)
+cargo build --features gui --release && ./target/release/memreduct gui     # run the GUI
 ```
 
 Distro build deps:
@@ -47,6 +49,16 @@ memreduct completions bash | sudo tee /usr/share/bash-completion/completions/mem
 memreduct completions zsh | sudo tee /usr/share/zsh/site-functions/_memreduct >/dev/null
 memreduct completions fish | sudo tee /usr/share/fish/vendor_completions.d/memreduct.fish >/dev/null
 ```
+
+### GUI (Windows + Linux, `gui` feature)
+
+```sh
+memreduct gui        # or
+memreduct --gui      # or
+memreduct            # no args → GUI if built with --features gui
+```
+
+Compact native window (egui, ~15MB, dark): live RAM/swap bars + PSI + history graph, `Clean`/`Compact` buttons, `Auto-clean` toggle, and tabs for **Processes** / **OOM** / **Slab** / **Zram** / **Cgroup** / **Leak Scan** — every CLI feature is reachable without opening a terminal. Details and platform differences are in [DOCUMENTATION.md](DOCUMENTATION.md#use-the-compact-gui-windows--linux).
 
 ## Command reference
 

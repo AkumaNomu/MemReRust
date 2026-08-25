@@ -10,3 +10,17 @@ anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.5"
 libc = "0.2"
+eframe = { version = "0.32", optional = true }
+egui_plot = { version = "0.32", optional = true }
+
+[features]
+default = []
+gui = ["dep:eframe", "dep:egui_plot"]
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_System_SystemInformation",
+    "Win32_System_Memory",
+    "Win32_System_ProcessStatus",
+    "Win32_Foundation",
+] }

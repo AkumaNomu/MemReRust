@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Mem Reduct
+Comment=Monitor and reclaim memory
+Exec=memreduct gui
+Icon=memreduct
+Terminal=false
+Type=Application
+Categories=System;Monitor;Utility;
+Keywords=memory;ram;clean;psi;zram;
+StartupWMClass=memreduct
