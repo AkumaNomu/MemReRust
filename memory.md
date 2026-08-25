@@ -61,8 +61,9 @@ injects its own crt1.o alongside rustc's self-contained rcrt1.o → duplicate
 "Commands"): `-C linker-flavor=ld.lld -C linker=$SYSROOT/.../bin/rust-lld`.
 CI avoids all of this via cargo-zigbuild.
 
-State at session end: ALL CHANGES UNCOMMITTED on upstream-master working
-tree (user has not asked for commits). `git add -A && git commit` when told.
+State at session end: committed and pushed to origin/upstream-master as
+e37383e ("v0.2.0: compact/slab/oom/completions commands, watch hardening,
+distro packaging, docs").
 
 ### 2026-08-25 (later) — re-audit of session 1
 
