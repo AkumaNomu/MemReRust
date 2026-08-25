@@ -1,0 +1,19 @@
+Source: memreduct
+Section: admin
+Priority: optional
+Maintainer: AkumaNomu <akumanomu@proton.me>
+Build-Depends:
+ debhelper-compat (= 13),
+ cargo,
+ rustc,
+Standards-Version: 4.6.2
+Homepage: https://github.com/AkumaNomu/MemReRust
+Rules-Requires-Root: no
+
+Package: memreduct
+Architecture: amd64 arm64
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Description: monitor and reclaim Linux memory caches (Mem Reduct port)
+ Rust CLI port of Henry++ Mem Reduct. Reads /proc and sysfs, drives
+ drop_caches, registers PSI triggers, manages cgroup v2 memory limits,
+ and reports zram telemetry. Every subcommand supports --json output.

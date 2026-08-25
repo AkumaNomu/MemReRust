@@ -1,0 +1,33 @@
+[Unit]
+Description=Mem Reduct: automatic memory cache cleaning
+Documentation=man:memreduct(8)
+ConditionVirtualization=!container
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/memreduct watch --threshold 90 --interval 30 --cooldown 300
+Restart=on-failure
+RestartSec=10
+
+# Hardening: watch only reads /proc and writes /proc/sys/vm when cleaning.
+# drop_caches requires root; keep CAP_SYS_ADMIN, drop everything else.
+CapabilityBoundingSet=CAP_SYS_ADMIN
+AmbientCapabilities=CAP_SYS_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/proc/sys/vm/drop_caches
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=no
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

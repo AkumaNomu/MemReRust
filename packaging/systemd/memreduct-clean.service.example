@@ -1,0 +1,12 @@
+# Timer-driven alternative to memreduct-watch.service.example:
+# run one check every 5 minutes instead of keeping a daemon resident.
+# Install both files, then:
+#   systemctl enable --now memreduct-clean.timer
+
+[Unit]
+Description=Mem Reduct: single memory check (used with memreduct-clean.timer)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/memreduct watch --once --threshold 90 --cooldown 300
+NoNewPrivileges=yes

@@ -23,7 +23,9 @@ impl Cgroup {
                 break;
             }
         }
-        let mount = mount.context("cgroup2 filesystem not mounted")?;
+        let mount = mount.context(
+            "cgroup v2 unified hierarchy not found (is the system running legacy cgroup v1?)",
+        )?;
 
         let own = fs::read_to_string("/proc/self/cgroup").context("read /proc/self/cgroup")?;
         let path = own
@@ -33,7 +35,7 @@ impl Cgroup {
                     .map(|(_, path)| PathBuf::from(path.trim()))
             })
             .next()
-            .context("no cgroup2 entry in /proc/self/cgroup")?;
+            .context("no cgroup v2 entry in /proc/self/cgroup (legacy cgroup v1 systems are not supported)")?;
 
         if !mount.join(&path).is_dir() {
             bail!("cgroup directory {} missing", mount.join(&path).display());

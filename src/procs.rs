@@ -17,6 +17,26 @@ pub struct ProcEntry {
     pub mem: ProcMem,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OomScore {
+    pub score: i64,
+    pub adj: i64,
+}
+
+pub fn read_oom_score(pid: i32) -> Result<OomScore> {
+    let score = read_i64_file(&format!("/proc/{pid}/oom_score"))
+        .with_context(|| format!("read oom_score of pid {pid}"))?;
+    let adj = read_i64_file(&format!("/proc/{pid}/oom_score_adj")).unwrap_or(0);
+    Ok(OomScore { score, adj })
+}
+
+fn read_i64_file(path: &str) -> Result<i64> {
+    let text = fs::read_to_string(path)?;
+    text.trim()
+        .parse()
+        .with_context(|| format!("invalid integer in {path}"))
+}
+
 pub fn all_pids() -> Vec<i32> {
     let mut pids = Vec::new();
     if let Ok(entries) = fs::read_dir("/proc") {
@@ -64,6 +84,19 @@ pub fn read_smaps_rollup(pid: i32) -> Result<ProcMem> {
     let text = fs::read_to_string(format!("/proc/{pid}/smaps_rollup"))
         .with_context(|| format!("read smaps_rollup of pid {pid}"))?;
     parse_smaps_rollup(&text)
+}
+
+/// Cheap resident-set read from statm (avoids walking smaps for every process).
+pub fn read_statm_rss_bytes(pid: i32) -> Option<u64> {
+    let text = fs::read_to_string(format!("/proc/{pid}/statm")).ok()?;
+    let pages: u64 = text.split_whitespace().nth(1)?.parse().ok()?;
+    Some(pages.saturating_mul(crate::zram::page_size()))
+}
+
+pub fn system_oom_kills() -> Option<u64> {
+    let text = fs::read_to_string("/proc/vmstat").ok()?;
+    text.lines()
+        .find_map(|line| line.strip_prefix("oom_kill ")?.trim().parse().ok())
 }
 
 pub fn parse_smaps_rollup(text: &str) -> Result<ProcMem> {

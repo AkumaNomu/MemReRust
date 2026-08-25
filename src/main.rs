@@ -1,14 +1,18 @@
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use std::collections::HashMap;
+use std::process::Command;
+use std::time::Instant;
 use std::{fs, thread, time::Duration};
 
 mod cgroup;
 mod mem;
 mod procs;
 mod psi;
+mod slab;
 mod zram;
 
+use clap_complete::generate;
 use mem::{format_bytes, parse_size, read_memory, Memory};
 
 #[derive(Parser, Debug)]
@@ -95,6 +99,18 @@ enum CommandKind {
         /// Use PSI pressure events (some/full) instead of periodic polling.
         #[arg(long, value_enum, num_args = 0..=1, default_missing_value = "full")]
         psi: Option<PsiMetric>,
+
+        /// Minimum seconds between automatic cleans (anti-thrash; 0 disables).
+        #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(0..))]
+        cooldown: u64,
+
+        /// Shell command to run after each triggered clean (e.g. a notification).
+        #[arg(long, value_name = "CMD")]
+        exec: Option<String>,
+
+        /// Swap-used threshold, percent (0 disables swap-based triggering).
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=100))]
+        swap_threshold: u8,
     },
 
     /// Per-process memory attribution via smaps_rollup.
@@ -104,8 +120,8 @@ enum CommandKind {
         pids: Vec<i32>,
 
         /// Limit listing to the N largest processes.
-        #[arg(long, default_value_t = 10)]
-        top: usize,
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..))]
+        top: u64,
     },
 
     /// Detect memory growth or leaks by sampling per-process PSS.
@@ -124,6 +140,34 @@ enum CommandKind {
         /// Measure swap-in/out rates over this many seconds (0 = disabled).
         #[arg(long, default_value_t = 0, value_name = "SECS")]
         sample: u64,
+    },
+
+    /// Trigger kernel memory compaction to reduce fragmentation.
+    Compact {
+        /// Report the operation without changing system state.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Top slab cache consumers (kernel object allocations).
+    Slab {
+        /// Limit listing to the N largest caches.
+        #[arg(long, default_value_t = 15, value_parser = clap::value_parser!(u64).range(1..))]
+        top: u64,
+    },
+
+    /// Rank processes by out-of-memory killer score.
+    Oom {
+        /// Limit listing to the N highest scoring processes.
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..))]
+        top: u64,
+    },
+
+    /// Print a shell completion script for this binary.
+    Completions {
+        /// Shell to generate completions for.
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
     },
 }
 
@@ -201,6 +245,12 @@ impl CleanMode {
 }
 
 fn main() {
+    // Die silently when our stdout pipe closes (e.g. `completions | head`)
+    // instead of panicking inside writers; standard CLI behavior.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     if let Err(error) = run() {
         eprintln!("error: {error:#}");
         std::process::exit(1);
@@ -227,10 +277,32 @@ fn run() -> Result<()> {
             once,
             dry_run,
             psi,
-        } => watch(threshold, interval, mode, once, dry_run, psi, cli.json),
-        CommandKind::Pss { pids, top } => pss(&pids, top, cli.json),
+            cooldown,
+            exec,
+            swap_threshold,
+        } => watch(WatchOpts {
+            threshold,
+            interval,
+            mode,
+            once,
+            dry_run,
+            psi,
+            cooldown,
+            exec: exec.as_deref(),
+            swap_threshold,
+            json: cli.json,
+        }),
+        CommandKind::Pss { pids, top } => pss(&pids, top as usize, cli.json),
         CommandKind::Grow { interval, min } => grow(interval, &min, cli.json),
         CommandKind::Zram { sample } => zram(sample, cli.json),
+        CommandKind::Compact { dry_run } => compact(dry_run, cli.json),
+        CommandKind::Slab { top } => slab(top as usize, cli.json),
+        CommandKind::Oom { top } => oom(top as usize, cli.json),
+        CommandKind::Completions { shell } => {
+            let mut cmd = Cli::command();
+            generate(shell, &mut cmd, "memreduct", &mut std::io::stdout());
+            Ok(())
+        }
     }
 }
 
@@ -243,9 +315,10 @@ fn print_status(memory: Memory, json: bool) -> Result<()> {
             None => (psi::PsiCounter::default(), psi::PsiCounter::default()),
         };
         println!(
-            "{{\"total_bytes\":{},\"used_bytes\":{},\"available_bytes\":{},\"cached_bytes\":{},\"buffers_bytes\":{},\"reclaimable_bytes\":{},\"used_percent\":{},\"swap_total_bytes\":{},\"swap_used_bytes\":{},\"psi_available\":{},\"psi_some_avg10_pct\":{:.2},\"psi_some_avg60_pct\":{:.2},\"psi_some_avg300_pct\":{:.2},\"psi_some_total_us\":{},\"psi_full_avg10_pct\":{:.2},\"psi_full_avg60_pct\":{:.2},\"psi_full_avg300_pct\":{:.2},\"psi_full_total_us\":{}}}",
+            "{{\"total_bytes\":{},\"used_bytes\":{},\"free_bytes\":{},\"available_bytes\":{},\"cached_bytes\":{},\"buffers_bytes\":{},\"reclaimable_bytes\":{},\"used_percent\":{},\"swap_total_bytes\":{},\"swap_used_bytes\":{},\"psi_available\":{},\"psi_some_avg10_pct\":{:.2},\"psi_some_avg60_pct\":{:.2},\"psi_some_avg300_pct\":{:.2},\"psi_some_total_us\":{},\"psi_full_avg10_pct\":{:.2},\"psi_full_avg60_pct\":{:.2},\"psi_full_avg300_pct\":{:.2},\"psi_full_total_us\":{}}}",
             memory.total,
             memory.used(),
+            memory.free,
             memory.available,
             memory.cached,
             memory.buffers,
@@ -273,6 +346,7 @@ fn print_status(memory: Memory, json: bool) -> Result<()> {
         format_bytes(memory.used()),
         memory.used_percent()
     );
+    println!("  free:       {}", format_bytes(memory.free));
     println!("  available:  {}", format_bytes(memory.available));
     println!("  cached:     {}", format_bytes(memory.cached));
     println!("  buffers:    {}", format_bytes(memory.buffers));
@@ -570,73 +644,138 @@ fn limit_set(
     Ok(())
 }
 
-fn watch(
+struct WatchOpts<'a> {
     threshold: u8,
+    swap_threshold: u8,
     interval: u64,
     mode: CleanMode,
     once: bool,
     dry_run: bool,
-    psi_metric: Option<PsiMetric>,
+    psi: Option<PsiMetric>,
+    cooldown: u64,
+    exec: Option<&'a str>,
     json: bool,
-) -> Result<()> {
-    match psi_metric {
-        Some(metric) => watch_psi(threshold, interval, mode, once, dry_run, metric, json),
-        None => watch_poll(threshold, interval, mode, once, dry_run, json),
+}
+
+/// Rate-limits automatic cleans and runs the optional post-clean hook.
+struct AutoClean {
+    last_clean: Option<Instant>,
+    cooldown: Duration,
+}
+
+impl AutoClean {
+    fn new(cooldown: Duration) -> Self {
+        Self {
+            last_clean: None,
+            cooldown,
+        }
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        self.last_clean
+            .is_none_or(|last| now.duration_since(last) >= self.cooldown)
+    }
+
+    fn fire(
+        &mut self,
+        mode: CleanMode,
+        dry_run: bool,
+        exec: Option<&str>,
+        json: bool,
+    ) -> Result<()> {
+        let result = clean(mode, dry_run, json);
+        if result.is_ok() && !dry_run {
+            self.last_clean = Some(Instant::now());
+            if let Some(command_line) = exec {
+                run_hook(command_line);
+            }
+        }
+        result
     }
 }
 
-fn watch_poll(
-    threshold: u8,
-    interval: u64,
-    mode: CleanMode,
-    once: bool,
-    dry_run: bool,
-    json: bool,
-) -> Result<()> {
+fn run_hook(command_line: &str) {
+    match Command::new("sh").arg("-c").arg(command_line).status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!("warning: --exec exited with {status}: {command_line}"),
+        Err(error) => eprintln!("warning: --exec failed to spawn sh: {error}"),
+    }
+}
+
+fn threshold_text(opts: &WatchOpts) -> String {
+    if opts.swap_threshold > 0 {
+        format!("{}/{}%", opts.threshold, opts.swap_threshold)
+    } else {
+        format!("{}%", opts.threshold)
+    }
+}
+
+fn watch(opts: WatchOpts) -> Result<()> {
+    match opts.psi {
+        Some(metric) => {
+            if opts.swap_threshold > 0 {
+                bail!("--swap-threshold applies only to polling mode; remove it or drop --psi");
+            }
+            watch_psi(opts, metric)
+        }
+        None => watch_poll(opts),
+    }
+}
+
+fn watch_poll(opts: WatchOpts) -> Result<()> {
+    let mut auto = AutoClean::new(Duration::from_secs(opts.cooldown));
     loop {
         let memory = match read_memory() {
             Ok(memory) => memory,
             Err(error) => {
-                if once {
+                if opts.once {
                     return Err(error);
                 }
                 eprintln!("error: {error:#}");
-                thread::sleep(Duration::from_secs(interval));
+                thread::sleep(Duration::from_secs(opts.interval));
                 continue;
             }
         };
-        if memory.used_percent() >= threshold {
-            if let Err(error) = clean(mode, dry_run, json) {
-                eprintln!("error: {error:#}");
+        let mem_pct = memory.used_percent();
+        let swap_pct = memory.swap_used_percent();
+        let tripped = mem_pct >= opts.threshold
+            || (opts.swap_threshold > 0 && swap_pct >= opts.swap_threshold);
+
+        if tripped {
+            if auto.due(Instant::now()) {
+                if let Err(error) = auto.fire(opts.mode, opts.dry_run, opts.exec, opts.json) {
+                    eprintln!("error: {error:#}");
+                }
+            } else if !opts.json {
+                println!(
+                    "memory {}% / swap {}%; thresholds {} (cooling down)",
+                    mem_pct,
+                    swap_pct,
+                    threshold_text(&opts)
+                );
             }
-        } else if !json {
+        } else if !opts.json {
             println!(
-                "memory {}%; threshold {}%",
-                memory.used_percent(),
-                threshold
+                "memory {}% / swap {}%; thresholds {}",
+                mem_pct,
+                swap_pct,
+                threshold_text(&opts)
             );
         }
 
-        if once {
+        if opts.once {
             return Ok(());
         }
-        thread::sleep(Duration::from_secs(interval));
+        thread::sleep(Duration::from_secs(opts.interval));
     }
 }
 
-fn watch_psi(
-    threshold: u8,
-    interval: u64,
-    mode: CleanMode,
-    once: bool,
-    dry_run: bool,
-    metric: PsiMetric,
-    json: bool,
-) -> Result<()> {
-    let window_us = interval.clamp(1, 10) * 1_000_000;
-    let stall_us = window_us / 100 * u64::from(threshold);
+fn watch_psi(opts: WatchOpts, metric: PsiMetric) -> Result<()> {
+    let window_us = opts.interval.clamp(1, 10) * 1_000_000;
+    let stall_us = window_us / 100 * u64::from(opts.threshold);
     let file = psi::PsiFile::open(metric.name(), stall_us, window_us)?;
-    let timeout = interval.saturating_mul(1000).min(i32::MAX as u64) as i32;
+    let timeout = opts.interval.saturating_mul(1000).min(i32::MAX as u64) as i32;
+    let mut auto = AutoClean::new(Duration::from_secs(opts.cooldown));
 
     loop {
         let event = file.wait_event(timeout)?;
@@ -646,20 +785,29 @@ fn watch_psi(
             PsiMetric::Full => pressure.full.avg10,
         };
 
-        if event && avg10 >= threshold as f64 {
-            if let Err(error) = clean(mode, dry_run, json) {
-                eprintln!("error: {error:#}");
+        if event && avg10 >= opts.threshold as f64 {
+            if auto.due(Instant::now()) {
+                if let Err(error) = auto.fire(opts.mode, opts.dry_run, opts.exec, opts.json) {
+                    eprintln!("error: {error:#}");
+                }
+            } else if !opts.json {
+                println!(
+                    "pressure {} {:.2}%; threshold {}% (cooling down)",
+                    metric.name(),
+                    avg10,
+                    opts.threshold
+                );
             }
-        } else if !json {
+        } else if !opts.json {
             println!(
                 "pressure {} {:.2}%; threshold {}%",
                 metric.name(),
                 avg10,
-                threshold
+                opts.threshold
             );
         }
 
-        if once {
+        if opts.once {
             return Ok(());
         }
     }
@@ -905,6 +1053,158 @@ fn zram(sample: u64, json: bool) -> Result<()> {
     Ok(())
 }
 
+fn compact(dry_run: bool, json: bool) -> Result<()> {
+    let before = read_memory()?;
+
+    if !dry_run {
+        fs::write(mem::COMPACT_MEMORY, "1").with_context(|| {
+            format!(
+                "write {}; requires root and a kernel with CONFIG_COMPACTION",
+                mem::COMPACT_MEMORY
+            )
+        })?;
+    }
+
+    let after = read_memory()?;
+
+    // Compaction relocates pages to create contiguous free ranges; it does
+    // not release memory, so the MemFree delta is informational only.
+    if json {
+        println!(
+            "{{\"dry_run\":{},\"free_before_bytes\":{},\"free_after_bytes\":{}}}",
+            dry_run, before.free, after.free
+        );
+    } else if dry_run {
+        println!("would trigger memory compaction");
+    } else {
+        println!(
+            "compaction triggered; free {} -> {} (compaction defragments, not frees)",
+            format_bytes(before.free),
+            format_bytes(after.free)
+        );
+    }
+    Ok(())
+}
+
+fn slab(top: usize, json: bool) -> Result<()> {
+    let mut caches = slab::read_slabinfo()?;
+    let cache_count = caches.len();
+    let total: u64 = caches.iter().map(|cache| cache.size_bytes()).sum();
+    caches.sort_by_key(|cache| std::cmp::Reverse(cache.size_bytes()));
+    caches.truncate(top);
+    let sorted = &caches;
+
+    if json {
+        print!("{{\"total_bytes\":{},\"caches\":[", total);
+        for (index, cache) in sorted.iter().enumerate() {
+            if index > 0 {
+                print!(",");
+            }
+            print!(
+                "{{\"name\":\"{}\",\"size_bytes\":{},\"active_bytes\":{},\"waste_bytes\":{},\"active_objs\":{},\"num_objs\":{},\"obj_size\":{},\"num_slabs\":{}}}",
+                json_escape(&cache.name),
+                cache.size_bytes(),
+                cache.active_bytes(),
+                cache.waste_bytes(),
+                cache.active_objs,
+                cache.num_objs,
+                cache.obj_size,
+                cache.num_slabs
+            );
+        }
+        println!("]}}");
+    } else {
+        if sorted.is_empty() {
+            println!("no slab caches reported by {}", slab::SLABINFO);
+            return Ok(());
+        }
+        println!(
+            "slab total {} (top {} of {} caches)",
+            format_bytes(total),
+            sorted.len(),
+            cache_count
+        );
+        println!(
+            "  {:<24} {:>12} {:>12} {:>10} {:>10} {:>10}",
+            "CACHE", "SIZE", "ACTIVE", "OBJ_SZ", "OBJS", "WASTE"
+        );
+        for cache in sorted {
+            let name: String = cache.name.chars().take(24).collect();
+            println!(
+                "  {:<24} {:>12} {:>12} {:>10} {:>10} {:>10}",
+                name,
+                format_bytes(cache.size_bytes()),
+                format_bytes(cache.active_bytes()),
+                format_bytes(cache.obj_size),
+                cache.num_objs,
+                format_bytes(cache.waste_bytes())
+            );
+        }
+    }
+    Ok(())
+}
+
+fn oom(top: usize, json: bool) -> Result<()> {
+    let mut entries = Vec::new();
+    for pid in procs::all_pids() {
+        let Ok(comm) = procs::read_comm(pid) else {
+            continue;
+        };
+        let Ok(score) = procs::read_oom_score(pid) else {
+            continue;
+        };
+        let rss = procs::read_statm_rss_bytes(pid).unwrap_or(0);
+        entries.push((pid, comm, score, rss));
+    }
+
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.2.score));
+    entries.truncate(top);
+    let kernel_kills = procs::system_oom_kills().unwrap_or(0);
+
+    if json {
+        print!("{{\"oom_kill_events\":{},\"processes\":[", kernel_kills);
+        for (index, (pid, comm, score, rss)) in entries.iter().enumerate() {
+            if index > 0 {
+                print!(",");
+            }
+            print!(
+                "{{\"pid\":{},\"comm\":\"{}\",\"oom_score\":{},\"oom_score_adj\":{},\"rss_bytes\":{}}}",
+                pid,
+                json_escape(comm),
+                score.score,
+                score.adj,
+                rss
+            );
+        }
+        println!("]}}");
+    } else {
+        if entries.is_empty() {
+            println!("no accessible processes (run as root for full visibility)");
+            return Ok(());
+        }
+        println!(
+            "kernel OOM kills since boot: {kernel_kills}{}",
+            if kernel_kills == 0 { "" } else { " (!)" }
+        );
+        println!(
+            "  {:>7} {:>8} {:>5} {:>10}  {:<24}",
+            "PID", "SCORE", "ADJ", "RSS", "COMM"
+        );
+        for (pid, comm, score, rss) in &entries {
+            let comm: String = comm.chars().take(24).collect();
+            println!(
+                "  {:>7} {:>8} {:>5} {:>10}  {:<24}",
+                pid,
+                score.score,
+                score.adj,
+                format_bytes(*rss),
+                comm
+            );
+        }
+    }
+    Ok(())
+}
+
 fn json_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -937,5 +1237,20 @@ mod tests {
         assert_eq!(CleanMode::PageCache.value(), 1);
         assert_eq!(CleanMode::Slab.value(), 2);
         assert_eq!(CleanMode::All.value(), 3);
+    }
+
+    #[test]
+    fn cooldown_gates_and_expires() {
+        let now = Instant::now();
+        let mut auto = AutoClean::new(Duration::from_secs(60));
+
+        assert!(auto.due(now), "first clean is always due");
+        auto.last_clean = Some(now - Duration::from_secs(30));
+        assert!(!auto.due(now), "inside the cooldown window");
+        auto.last_clean = Some(now - Duration::from_secs(61));
+        assert!(auto.due(now), "cooldown elapsed");
+
+        let disabled = AutoClean::new(Duration::ZERO);
+        assert!(disabled.due(now));
     }
 }

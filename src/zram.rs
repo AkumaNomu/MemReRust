@@ -37,7 +37,6 @@ impl ZramDevice {
         self.same_pages = values.get(5).copied().unwrap_or(0);
         self.huge_pages = values.get(7).copied().unwrap_or(0);
     }
-
 }
 
 pub fn page_size() -> u64 {

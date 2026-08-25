@@ -1,0 +1,24 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+override_dh_auto_build:
+	cargo build --locked --release
+
+override_dh_auto_test:
+	cargo test --locked --release
+
+override_dh_auto_install:
+	install -Dm0755 target/release/memreduct \
+		debian/memreduct/usr/bin/memreduct
+	target/release/memreduct completions bash > debian/memreduct.bash
+	target/release/memreduct completions zsh > debian/_memreduct
+	target/release/memreduct completions fish > debian/memreduct.fish
+	install -Dm0644 debian/memreduct.bash \
+		debian/memreduct/usr/share/bash-completion/completions/memreduct
+	install -Dm0644 debian/_memreduct \
+		debian/memreduct/usr/share/zsh/vendor-completions/_memreduct
+	install -Dm0644 debian/memreduct.fish \
+		debian/memreduct/usr/share/fish/vendor_completions.d/memreduct.fish
+	install -Dm0644 packaging/systemd/memreduct-watch.service.example \
+		debian/memreduct/usr/share/doc/memreduct/memreduct-watch.service.example

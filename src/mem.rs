@@ -3,10 +3,12 @@ use std::fs;
 
 pub const MEMINFO: &str = "/proc/meminfo";
 pub const DROP_CACHES: &str = "/proc/sys/vm/drop_caches";
+pub const COMPACT_MEMORY: &str = "/proc/sys/vm/compact_memory";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Memory {
     pub total: u64,
+    pub free: u64,
     pub available: u64,
     pub cached: u64,
     pub buffers: u64,
@@ -29,6 +31,13 @@ impl Memory {
 
     pub fn swap_used(self) -> u64 {
         self.swap_total.saturating_sub(self.swap_free)
+    }
+
+    pub fn swap_used_percent(self) -> u8 {
+        if self.swap_total == 0 {
+            return 0;
+        }
+        ((self.swap_used() * 100) / self.swap_total).min(100) as u8
     }
 
     pub fn reclaimable_caches(self) -> u64 {
@@ -61,6 +70,7 @@ pub fn parse_meminfo(text: &str) -> Result<Memory> {
 
         match key {
             "MemTotal" => memory.total = bytes,
+            "MemFree" => memory.free = bytes,
             "MemAvailable" => memory.available = bytes,
             "Cached" => memory.cached = bytes,
             "Buffers" => memory.buffers = bytes,
@@ -101,11 +111,12 @@ pub fn parse_size(text: &str) -> Result<u64> {
     }
     let mut mult = 1u64;
     if let Some(last) = t.chars().last() {
-        if matches!(last, 'k' | 'K' | 'm' | 'M' | 'g' | 'G') {
+        if matches!(last, 'k' | 'K' | 'm' | 'M' | 'g' | 'G' | 't' | 'T') {
             mult = match last {
                 'k' | 'K' => 1024,
                 'm' | 'M' => 1024 * 1024,
-                _ => 1024 * 1024 * 1024,
+                'g' | 'G' => 1024 * 1024 * 1024,
+                _ => 1024_u64 * 1024 * 1024 * 1024,
             };
             t = &t[..t.len() - 1];
         }
@@ -148,11 +159,25 @@ mod tests {
         assert_eq!(parse_size("1K").unwrap(), 1024);
         assert_eq!(parse_size("2m").unwrap(), 2 * 1024 * 1024);
         assert_eq!(parse_size("3G").unwrap(), 3 * 1024 * 1024 * 1024);
+        assert_eq!(parse_size("1T").unwrap(), 1024_u64 * 1024 * 1024 * 1024);
         assert_eq!(parse_size("4KiB").unwrap(), 4 * 1024);
         assert_eq!(parse_size("5MB").unwrap(), 5 * 1024 * 1024);
         assert_eq!(parse_size("6MiB").unwrap(), 6 * 1024 * 1024);
         assert_eq!(parse_size("0").unwrap(), 0);
         assert!(parse_size("abc").is_err());
         assert!(parse_size("").is_err());
+    }
+
+    #[test]
+    fn tracks_swap_percent() {
+        let memory = parse_meminfo(
+            "MemTotal:       1024 kB\nMemFree:         128 kB\nSwapTotal:       400 kB\nSwapFree:        100 kB\n",
+        )
+        .unwrap();
+        assert_eq!(memory.free, 128 * 1024);
+        assert_eq!(memory.swap_used_percent(), 75);
+
+        let no_swap = Memory::default();
+        assert_eq!(no_swap.swap_used_percent(), 0);
     }
 }

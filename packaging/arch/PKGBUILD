@@ -1,0 +1,47 @@
+# Maintainer: AkumaNomu <akumanomu@proton.me>
+pkgname=memreduct
+pkgver=0.2.0
+pkgrel=1
+pkgdesc='Monitor and reclaim Linux memory caches (Mem Reduct port)'
+arch=(x86_64 aarch64)
+url='https://github.com/AkumaNomu/MemReRust'
+license=(GPL-3.0-only)
+makedepends=(cargo)
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')  # replace with the release tag checksum before uploading
+options=(!lto)
+
+prepare() {
+    cargo fetch --locked --manifest-path "$pkgname-$pkgver/Cargo.toml"
+}
+
+build() {
+    cargo build --frozen --release --manifest-path "$pkgname-$pkgver/Cargo.toml"
+}
+
+check() {
+    cargo test --frozen --release --manifest-path "$pkgname-$pkgver/Cargo.toml"
+}
+
+package() {
+    install -Dm0755 "$pkgname-$pkgver/target/release/memreduct" \
+        "$pkgdir/usr/bin/memreduct"
+    install -Dm0644 "$pkgname-$pkgver/README.md" \
+        "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm0644 "$pkgname-$pkgver/packaging/systemd/memreduct-watch.service.example" \
+        "$pkgdir/usr/share/doc/$pkgname/memreduct-watch.service.example"
+
+    local _shell
+    for _shell in bash zsh fish; do
+        "$pkgdir/usr/bin/memreduct" completions "$_shell" \
+            > "$pkgname-$_shell.complete" 2>/dev/null || continue
+        case "$_shell" in
+            bash) install -Dm0644 "$pkgname-bash.complete" \
+                "$pkgdir/usr/share/bash-completion/completions/$pkgname" ;;
+            zsh)  install -Dm0644 "$pkgname-zsh.complete" \
+                "$pkgdir/usr/share/zsh/site-functions/_$pkgname" ;;
+            fish) install -Dm0644 "$pkgname-fish.complete" \
+                "$pkgdir/usr/share/fish/vendor_completions.d/$pkgname.fish" ;;
+        esac
+    done
+}
